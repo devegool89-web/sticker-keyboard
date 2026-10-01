@@ -4,6 +4,9 @@ on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -34,3 +37,12 @@ jobs:
         name: app-debug-apk
         path: StickerKeyboard-fixed/app/build/outputs/apk/debug/app-debug.apk
         if-no-files-found: error
+
+    - name: Publish APK as a direct download
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh release create "build-${{ github.run_number }}" \
+          StickerKeyboard-fixed/app/build/outputs/apk/debug/app-debug.apk \
+          --title "Build ${{ github.run_number }}" \
+          --notes "Debug APK"
