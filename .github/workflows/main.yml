@@ -10,39 +10,83 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-    - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Unzip project
-      run: unzip -q ./*.zip
+      - name: Find and unzip project
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROJECT_ZIP="$(find . -maxdepth 1 -type f -name '*.zip' -print -quit)"
+          if [ -z "${PROJECT_ZIP}" ]; then
+            echo "No project ZIP found in repository root."
+            exit 1
+          fi
+          echo "Using project archive: ${PROJECT_ZIP}"
+          unzip -q "${PROJECT_ZIP}"
+          test -d StickerKeyboard-fixed
 
-    - name: Set up JDK 17
-      uses: actions/setup-java@v4
-      with:
-        java-version: '17'
-        distribution: 'temurin'
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
 
-    - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v4
-      with:
-        gradle-version: '8.7'
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
 
-    - name: Build with Gradle
-      working-directory: StickerKeyboard-fixed
-      run: gradle assembleDebug --stacktrace
+      - name: Build debug APK
+        working-directory: StickerKeyboard-fixed
+        run: gradle --no-daemon assembleDebug --stacktrace
 
-    - name: Upload APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: app-debug-apk
-        path: StickerKeyboard-fixed/app/build/outputs/apk/debug/app-debug.apk
-        if-no-files-found: error
+      - name: Validate APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="StickerKeyboard-fixed/app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$APK"
+          echo "APK size: $(du -h "$APK" | cut -f1)"
 
-    - name: Publish APK as a direct download
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: |
-        gh release create "build-${{ github.run_number }}" \
-          StickerKeyboard-fixed/app/build/outputs/apk/debug/app-debug.apk \
-          --title "Build ${{ github.run_number }}" \
-          --notes "Debug APK"
+          # APKs are ZIP containers. Test the complete archive before publishing it.
+          unzip -t "$APK" >/tmp/apk-zip-test.log
+          tail -n 2 /tmp/apk-zip-test.log
+
+          # Verify the Android APK signature using the newest installed build-tools.
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          if [ -z "$APKSIGNER" ]; then
+            echo "apksigner was not found."
+            exit 1
+          fi
+          "$APKSIGNER" verify --verbose "$APK"
+
+          sha256sum "$APK" | tee StickerKeyboard-fixed/app-debug.apk.sha256
+
+      - name: Upload APK artifact (uncompressed)
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: |
+            StickerKeyboard-fixed/app/build/outputs/apk/debug/app-debug.apk
+            StickerKeyboard-fixed/app-debug.apk.sha256
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Publish APK as GitHub Release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="StickerKeyboard-fixed/app/build/outputs/apk/debug/app-debug.apk"
+          SHA="StickerKeyboard-fixed/app-debug.apk.sha256"
+          TAG="build-${{ github.run_number }}"
+
+          gh release create "$TAG" \
+            "$APK" \
+            "$SHA" \
+            --title "Build ${{ github.run_number }}" \
+            --notes "Debug APK. The APK was ZIP-tested and signature-verified before publishing."
